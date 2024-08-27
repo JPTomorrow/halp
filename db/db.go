@@ -19,8 +19,8 @@ func connectToDb() *sql.DB {
 	return db
 }
 
-var DbInstance *sql.DB
+var dbInstance *sql.DB
 
 func InitDb() {
-	DbInstance = connectToDb()
+	dbInstance = connectToDb()
 }

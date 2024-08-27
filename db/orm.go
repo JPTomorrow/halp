@@ -17,21 +17,19 @@ func toSnakeCase(str string) string {
 	return strings.ToLower(snake)
 }
 
-func getSqlTableNameString(s interface{}) string {
+func sqlTableNameString(s interface{}) string {
 	name := reflect.TypeOf(s).Name()
 	return toSnakeCase(name + "s")
 }
 
-func getSqlFieldNames(s interface{}, exclude_props ...string) string {
+func sqlFieldNames(s interface{}, exclude_props ...string) string {
 	t := reflect.TypeOf(s)
 	sb := strings.Builder{}
 
 OUTER:
 	for i := 0; i < t.NumField(); i++ {
-		name, ok := t.Field(i).Tag.Lookup("sql_name")
-		props, ok2 := t.Field(i).Tag.Lookup("sql_props")
-
-		if !ok || !ok2 {
+		props, ok := t.Field(i).Tag.Lookup("sql_props")
+		if !ok {
 			continue
 		}
 
@@ -39,6 +37,11 @@ OUTER:
 			if strings.Contains(props, val) {
 				continue OUTER
 			}
+		}
+
+		name, ok := t.Field(i).Tag.Lookup("sql_name")
+		if !ok {
+			continue
 		}
 
 		sb.WriteString(name)
@@ -49,7 +52,7 @@ OUTER:
 	return sb.String()
 }
 
-func getSqlFieldValues(s interface{}, exclude_props ...string) string {
+func sqlFieldValues(s interface{}, exclude_props ...string) string {
 	v := reflect.ValueOf(s)
 	sb := strings.Builder{}
 
@@ -75,26 +78,27 @@ OUTER:
 	return sb.String()
 }
 
-func getSqlFieldValue(s interface{}, val string) (string, error) {
+func sqlFieldValue(s interface{}, val string) (string, error) {
 	v := reflect.ValueOf(s)
 	for i := 0; i < v.NumField(); i++ {
 		if v.Type().Field(i).Tag.Get("sql_name") == val {
 			return fmt.Sprintf("'%+v'", v.Field(i)), nil
 		}
 	}
-	return "", fmt.Errorf("field not found")
+	tableName := sqlTableNameString(s)
+	return "", fmt.Errorf("field not found in -> %s", tableName)
 }
 
-func PushSchema(structs ...interface{}) (string, error) {
+func SchemaString(structs ...interface{}) ([]string, error) {
+	final := []string{}
 	sb := strings.Builder{}
-	final := strings.Builder{}
 
 	for _, s := range structs {
 		t := reflect.TypeOf(s)
 		fcount := t.NumField()
-		struct_name := getSqlTableNameString(s)
+		struct_name := sqlTableNameString(s)
 
-		// create table statement
+		// generate field strings
 		sb.WriteString("CREATE TABLE IF NOT EXISTS " + struct_name + " (\n")
 
 		for i := range fcount {
@@ -108,45 +112,60 @@ func PushSchema(structs ...interface{}) (string, error) {
 				continue
 			}
 			sb.WriteString("\t\t\t" + end)
+
+			// generate foreign key strings
+			fullKey, ok := t.Field(i).Tag.Lookup("sql_fk")
+			if !ok {
+				if i < fcount-1 {
+					sb.WriteString(",\n")
+				}
+				continue
+			}
+
+			split := strings.Split(fullKey, ".")
+			if len(split) != 2 {
+				return nil, fmt.Errorf("sql_fk tag has an invalid value")
+			}
+
+			fk := fmt.Sprintf(" REFERENCES %ss(%s)", split[0], split[1])
+			sb.WriteString(fk)
+
 			if i < fcount-1 {
-				end = ",\n"
-				sb.WriteString(end)
+				sb.WriteString(",\n")
 			}
 		}
 
-		sb.WriteString(")\n\n")
-		_, err := DbInstance.Exec(sb.String())
-		if err != nil {
-			return "", err
-		}
-		final.WriteString(sb.String())
+		sb.WriteString("\n)")
+		final = append(final, sb.String())
 		sb.Reset()
 	}
-	return final.String(), nil
+
+	return final, nil
 }
 
 func Insert(s interface{}) (sql.Result, error) {
-	query := "INSERT INTO " + getSqlTableNameString(s) + " (" + getSqlFieldNames(s, "AUTOINCREMENT") + ") VALUES (" + getSqlFieldValues(s, "AUTOINCREMENT") + ")"
+	query := "INSERT INTO " + sqlTableNameString(s) + " (" + sqlFieldNames(s, "AUTOINCREMENT") + ") VALUES (" + sqlFieldValues(s, "AUTOINCREMENT") + ")"
 	fmt.Printf("\nInsert Query: %s\n\n\n", query)
-	return DbInstance.Exec(query)
+	return dbInstance.Exec(query)
 }
 
 func Remove(s interface{}) (sql.Result, error) {
-	id, err := getSqlFieldValue(s, "id")
+	id, err := sqlFieldValue(s, "id")
 	if err != nil {
 		return nil, err
 	}
-	query := "DELETE FROM " + getSqlTableNameString(s) + " WHERE id = " + id
+
+	query := "DELETE FROM " + sqlTableNameString(s) + " WHERE id = " + id
 	fmt.Printf("\nRemove Query: %s\n\n\n", query)
-	return DbInstance.Exec(query)
+	return dbInstance.Exec(query)
 }
 
 func Update() {
-
+	panic("SQL ORM Update not implemented")
 }
 
 func Query(entry interface{}, values ...string) (*sql.Rows, error) {
-	table_name := getSqlTableNameString(entry)
+	table_name := sqlTableNameString(entry)
 	query := strings.Builder{}
 	query.WriteString("SELECT * FROM " + table_name + " WHERE ")
 	for i, val := range values {
@@ -159,5 +178,13 @@ func Query(entry interface{}, values ...string) (*sql.Rows, error) {
 		}
 	}
 	fmt.Printf("\nQuery: %s\n\n\n", query.String())
-	return DbInstance.Query(query.String())
+	return dbInstance.Query(query.String())
+}
+
+func Exec(s string, args ...any) (sql.Result, error) {
+	return dbInstance.Exec(s)
+}
+
+func CloseDB() {
+	dbInstance.Close()
 }

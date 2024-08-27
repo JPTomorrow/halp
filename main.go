@@ -18,7 +18,7 @@ import (
 	"github.com/labstack/gommon/log"
 )
 
-func main() { 
+func main() {
 	e := echo.New()
 
 	e.HideBanner = true
@@ -50,7 +50,7 @@ func main() {
 	}
 
 	db.InitDb()
-	defer db.DbInstance.Close()
+	defer db.CloseDB()
 
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
@@ -63,7 +63,7 @@ func main() {
 		e.Logger.Fatal(e.Start(":" + os.Getenv("PORT")))
 	}()
 
-	// async stuff here
+	// any async stuff here
 
 	// wait
 	c := make(chan os.Signal, 1)
