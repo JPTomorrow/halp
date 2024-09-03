@@ -2,24 +2,47 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/JPTomorrow/halp/config"
 	"github.com/JPTomorrow/halp/db"
+	"github.com/coder/websocket"
 
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 )
 
 /*
 This is where all the the routes are defined for the API.
 */
 
+type WsContext struct {
+	echo.Context
+	chat *ChatHub
+}
+
 func initRoutes(e *echo.Echo) {
+	// middleware
+	ctxChat := NewChat()
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			cc := &WsContext{
+				c,
+				ctxChat,
+			}
+			return next(cc)
+		}
+	})
+	// e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
+
 	// backend routes
 	e.GET("/", alive)
-	// e.GET("/connect-to-support", connectWithNextSupportRep)
-	// e.GET("/queue-for-support", supportRepQueue)
+	e.GET("/customer-connect", customerConnect)
+	e.GET("/support-connect", supportRepConnect)
 
 	// debug only routes
 	if config.DEBUG {
@@ -32,7 +55,7 @@ func alive(c echo.Context) error {
 }
 
 func updateDbSchema(c echo.Context) error {
-	schema, err := db.SchemaString(db.Customer{}, db.SalesRep{}, db.SupportTicket{})
+	schema, err := db.SchemaString(db.Customer{}, db.SupportRepresentative{}, db.SupportTicket{})
 	for _, table := range schema {
 
 		if err != nil {
@@ -46,180 +69,61 @@ func updateDbSchema(c echo.Context) error {
 		}
 	}
 
-	msg := strings.Join(schema, "\n\n") + "\n\nTable created successfully!!!\n\n"
+	msg := strings.Join(schema, "\n\n") + "\nTables created successfully!!!\n\n"
 	fmt.Println(msg)
 	return c.String(http.StatusOK, msg)
 }
 
-// const (
-// 	customerPoolSize = 10000
-// 	salesRepPoolSize = 10000
-// )
+// Connect a user to the next available support representative
+func customerConnect(c echo.Context) error {
+	wc := c.(*WsContext)
+	conn, err := websocket.Accept(wc.Response().Writer, wc.Request(), nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "Websocket connection to support closed...")
 
-// var (
-// 	upgrader     = websocket.Upgrader{}
-// 	customerPool = make([]db.User, customerPoolSize)
-// 	salesRepPool = make([]db.User, customerPoolSize)
-// )
+	id := wc.Request().Header.Get("id")
+	if id == "" {
+		conn.Close(websocket.StatusProtocolError, "no id provided.")
+	}
 
-// // Connect a user to the next available support representative
-// func connectWithNextSupportRep(c echo.Context) error {
+	s, err := strconv.Atoi(id)
+	if err != nil {
+		conn.Close(websocket.StatusProtocolError, "invalid id.")
+	}
 
-// 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer ws.Close()
+	// print chat length
+	ch, ok := wc.chat.NextAvailableRep(s, conn)
+	if !ok {
+		log.Printf("no available rep for id: %v", id)
+		conn.Close(websocket.StatusProtocolError, "no available support rep.")
+		return wc.String(http.StatusOK, "no available support rep...")
+	}
 
-// 	isCustomer := c.Request().Header.Get("is-customer")
-// 	if isCustomer == "" {
-// 		return c.String(http.StatusBadRequest, "Missing is-customer header")
-// 	} else if isCustomer == "true" {
-// 		fmt.Println("YOU ARE A CUSTOMER")
-// 	} else if isCustomer == "false" {
-// 		fmt.Println("YOU ARE A SUPPORT REP")
-// 	}
+	wc.chat.Run(ch, wc, conn)
+	return wc.String(http.StatusOK, "Connection to support closed...")
+}
 
-// 	exit := false
-// 	for exit {
-// 		// Write
-// 		err := ws.WriteMessage(websocket.TextMessage, []byte("Hello, Client!"))
-// 		if err != nil {
-// 			c.Logger().Error(err)
-// 		}
+func supportRepConnect(c echo.Context) error {
+	wc := c.(*WsContext)
+	conn, err := websocket.Accept(wc.Response().Writer, wc.Request(), nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "Websocket connection to customer closed...")
 
-// 		// Read
-// 		_, msg, err := ws.ReadMessage()
-// 		if err != nil {
-// 			c.Logger().Error(err)
-// 		}
-// 		fmt.Printf("%s\n", msg)
-// 	}
+	id := wc.Request().Header.Get("id")
+	if id == "" {
+		conn.Close(websocket.StatusProtocolError, "no id provided.")
+	}
 
-// 	return c.String(http.StatusOK, "Websocket closed. Support chat finished!")
-// }
+	s, err := strconv.Atoi(id)
+	if err != nil {
+		conn.Close(websocket.StatusProtocolError, "invalid id (during str conversion).")
+	}
 
-// func supportRepQueue(c echo.Context) error {
-
-// 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer ws.Close()
-
-// 	isCustomer := c.Request().Header.Get("is-customer")
-// 	if isCustomer == "" {
-// 		return c.String(http.StatusBadRequest, "Missing is-customer header")
-// 	} else if isCustomer == "true" {
-// 		fmt.Println("YOU ARE A CUSTOMER")
-// 	} else if isCustomer == "false" {
-// 		fmt.Println("YOU ARE A SUPPORT REP")
-// 	}
-
-// 	for {
-// 		// Write
-// 		err := ws.WriteMessage(websocket.TextMessage, []byte("Hello, Client!"))
-// 		if err != nil {
-// 			c.Logger().Error(err)
-// 		}
-
-// 		// Read
-// 		_, msg, err := ws.ReadMessage()
-// 		if err != nil {
-// 			c.Logger().Error(err)
-// 		}
-// 		fmt.Printf("%s\n", msg)
-// 	}
-// 	return c.String(http.StatusOK, "Websocket closed. Support chat finished!")
-// }
-
-// func addIngestFileProfile(c echo.Context) error {
-// 	profile := db.IngestFileProfile{
-// 		Name:             "",
-// 		Description:      "",
-// 		FirstCreated:     time.Now(),
-// 		LastUpdated:      time.Now(),
-// 		FilePath:         "",
-// 		AiOcrTextSummary: "",
-// 	}
-
-// 	json.NewDecoder(c.Request().Body).Decode(&profile)
-// 	_, insert_err := db.Insert(profile)
-// 	if insert_err != nil {
-// 		return c.String(http.StatusOK, "ADD PROFILE ERROR: database insert\n\n"+insert_err.Error())
-// 	}
-
-// 	return c.String(http.StatusOK, "File orofile '"+profile.Name+"' was added successfully!!!")
-// }
-
-// func createEmailPasswordAccount(c echo.Context) error {
-// 	user := db.User{
-// 		Username: "",
-// 		Password: "",
-// 		Email:    "",
-// 		Phone:    "",
-// 	}
-// 	json.NewDecoder(c.Request().Body).Decode(&user)
-
-// 	if user.Username == "" || user.Password == "" || user.Email == "" || user.Phone == "" {
-// 		return c.String(http.StatusBadRequest, "Missing required fields")
-// 	}
-
-// 	_, qerr := db.Query(user, "username")
-// 	if qerr != nil {
-// 		return c.String(http.StatusInternalServerError, "Email account creation error: username "+user.Username+" already exists\n\n"+qerr.Error())
-// 	}
-
-// 	_, err := db.Insert(user)
-// 	if err != nil {
-// 		return c.String(http.StatusInternalServerError, "Email account creation error: database insert\n\n"+err.Error())
-// 	}
-
-// 	return c.String(http.StatusOK, "Account Created: "+user.Username)
-// }
-
-// func tokenLogin(c echo.Context) error {
-// 	// @TODO: get username and password from request and then look to see if it is in the database already
-// 	un := c.Request().FormValue("username")
-// 	pw := c.Request().FormValue("password")
-
-// 	if un == "" || pw == "" {
-// 		return c.String(http.StatusBadRequest, "Missing username or password")
-// 	}
-
-// 	rows, qerr := db.Query(db.IngestFileProfile{})
-// 	if qerr == nil {
-// 		// found the user
-// 		for rows.Next() {
-// 			profile := db.IngestFileProfile{
-// 				Name: un,
-// 			}
-// 			serr := rows.Scan(&profile.Id, &profile.Name, &profile.FirstCreated, &profile.LastUpdated)
-// 			if serr != nil {
-// 				fmt.Printf("SCAN ERROR: %v\n\n", serr)
-// 			}
-// 			fmt.Printf("PROFILE: %v\n\n", profile)
-// 		}
-// 	} else {
-// 		// did not find the user
-// 		fmt.Printf("USER NOT FOUND: %v\n\n", qerr)
-// 		fmt.Printf("CREATING USER: %v\n\n", un)
-// 		// db.Insert(db.User{})
-// 	}
-
-// 	bearerToken := c.Request().Header.Get("Authorization")
-// 	if !auth.IsValidLoginToken(bearerToken) {
-// 		return c.String(http.StatusUnauthorized, "Unauthorized")
-// 	}
-
-// 	return c.String(http.StatusOK, "Authorized")
-// }
-
-// func resource(c echo.Context) error {
-// 	bearerToken := c.Request().Header.Get("Authorization")
-// 	if !auth.IsValidLoginToken(bearerToken) {
-// 		return c.String(http.StatusUnauthorized, "Unauthorized")
-// 	}
-
-// 	return c.String(http.StatusOK, "Authorized")
-// }
+	ch := wc.chat.RegisterSupportRep(s, conn)
+	wc.chat.Run(ch, wc, conn)
+	return wc.String(http.StatusOK, "Connection to customer closed...")
+}
